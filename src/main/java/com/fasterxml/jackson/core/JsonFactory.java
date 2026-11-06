@@ -868,7 +868,9 @@ public class JsonFactory
      * @since 2.1
      */
     public JsonParser createParser(byte[] data, int offset, int len) throws IOException, JsonParseException {
-        IOContext ctxt = _createContext(data, true);
+        // Wrap with `ContentReference` so that reported location only exposes
+        // the [offset, offset+len) window caller actually gave us
+        IOContext ctxt = _createContext(new ContentReference(data, offset, len), true);
         // [JACKSON-512]: allow wrapping with InputDecorator
         if (_inputDecorator != null) {
             InputStream in = _inputDecorator.decorate(ctxt, data, offset, len);
@@ -918,7 +920,10 @@ public class JsonFactory
         if (_inputDecorator != null) { // easier to just wrap in a Reader than extend InputDecorator
             return createParser(new CharArrayReader(content, offset, len));
         }
-        return _createParser(content, offset, len, _createContext(content, true),
+        // Wrap with `ContentReference` so that reported location only exposes
+        // the [offset, offset+len) window caller actually gave us
+        return _createParser(content, offset, len,
+                _createContext(new ContentReference(content, offset, len), true),
                 // important: buffer is NOT recyclable, as it's from caller
                 false);
     }

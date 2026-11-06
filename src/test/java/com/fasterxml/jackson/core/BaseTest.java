@@ -510,6 +510,10 @@ public abstract class BaseTest
     }
 
     protected static String aposToQuotes(String json) {
+        return a2q(json);
+    }
+
+    protected static String a2q(String json) {
         return json.replace("'", "\"");
     }
 

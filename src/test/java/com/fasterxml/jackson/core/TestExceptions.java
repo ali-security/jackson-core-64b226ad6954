@@ -119,4 +119,88 @@ public class TestExceptions extends BaseTest
 
         // any other cases we'd like to test?
     }
+
+    public void testContentSnippetWithOffset() throws Exception
+    {
+        JsonParser p;
+        final String json = a2q("{'k1':'v1'}\n[broken]\n");
+        final byte[] jsonB = utf8Bytes(json);
+        final int lfIndex = json.indexOf("\n");
+        final int start = lfIndex+1;
+        final int len = json.length() - start;
+
+        p = JSON_F.createParser(jsonB, start, len);
+        // for byte-based, will be after character that follows token:
+        // (and alas cannot be easily fixed)
+        _testContentSnippetWithOffset(p, 9, "(byte[])\"[broken]\n\"");
+        p.close();
+
+        final char[] jsonC = json.toCharArray();
+        p = JSON_F.createParser(jsonC, start, len);
+        // for char-based we get true offset at end of token
+        _testContentSnippetWithOffset(p, 8, "(char[])\"[broken]\n\"");
+        p.close();
+    }
+
+    private void _testContentSnippetWithOffset(final JsonParser p,
+            int expColumn, String expContent) throws Exception
+    {
+        assertToken(JsonToken.START_ARRAY, p.nextToken());
+        try {
+            p.nextToken();
+            fail("Should not pass");
+        } catch (JsonParseException e) {
+            verifyException(e, "Unrecognized token 'broken'");
+            JsonLocation loc = e.getLocation();
+            assertEquals(1, loc.getLineNr());
+            assertEquals(expColumn, loc.getColumnNr());
+            final String srcDesc = loc.sourceDescription();
+
+            assertEquals(expContent, srcDesc);
+        }
+    }
+
+    // [core#652]: content that surrounds the [offset, offset+len) window the
+    // caller declared must NOT end up in the location description (nor in the
+    // exception message that embeds it) -- neither leading nor trailing part.
+    public void testContentSnippetDoesNotLeakSurroundingBuffer() throws Exception
+    {
+        final String leading = a2q("{'leading':'SECRET-BEFORE'}\n");
+        final String window = "[broken]";
+        final String trailing = a2q("\n{'trailing':'SECRET-AFTER'}");
+        final String doc = leading + window + trailing;
+        // all-ASCII content, so char offsets == byte offsets
+        final int start = leading.length();
+        final int len = window.length();
+
+        JsonParser p = JSON_F.createParser(utf8Bytes(doc), start, len);
+        _testNoSurroundingContent(p, "(byte[])\"" + window + "\"");
+        p.close();
+
+        p = JSON_F.createParser(doc.toCharArray(), start, len);
+        _testNoSurroundingContent(p, "(char[])\"" + window + "\"");
+        p.close();
+    }
+
+    private void _testNoSurroundingContent(final JsonParser p, String expContent)
+        throws Exception
+    {
+        assertToken(JsonToken.START_ARRAY, p.nextToken());
+        try {
+            p.nextToken();
+            fail("Should not pass");
+        } catch (JsonParseException e) {
+            verifyException(e, "Unrecognized token 'broken'");
+            final String srcDesc = e.getLocation().sourceDescription();
+            assertEquals(expContent, srcDesc);
+            // and, most importantly, nothing from outside the declared window:
+            if (srcDesc.contains("SECRET")) {
+                fail("Source description leaked out-of-window content: "+srcDesc);
+            }
+            final String msg = e.getMessage();
+            if (msg.contains("SECRET")) {
+                fail("Exception message leaked out-of-window content: "+msg);
+            }
+        }
+    }
 }

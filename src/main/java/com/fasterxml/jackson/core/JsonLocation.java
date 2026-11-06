@@ -7,6 +7,8 @@ package com.fasterxml.jackson.core;
 
 import java.nio.charset.Charset;
 
+import com.fasterxml.jackson.core.io.ContentReference;
+
 /**
  * Object that encapsulates Location information used for reporting
  * parsing (or potentially generation) errors, as well as current location
@@ -76,7 +78,15 @@ public class JsonLocation
      * for example when {@link java.io.InputStream} was used to
      * construct the parser instance.
      */
-    public Object getSourceRef() { return _sourceRef; }
+    public Object getSourceRef() {
+        // 2.9.6-sp: content may be wrapped in `ContentReference` (to retain
+        // offset/length of the window caller actually handed us); callers of
+        // this method expect the raw content, so unwrap it here.
+        if (_sourceRef instanceof ContentReference) {
+            return ((ContentReference) _sourceRef).getRawContent();
+        }
+        return _sourceRef;
+    }
 
     /**
      * @return Line number of the location (1-based)
@@ -168,12 +178,26 @@ public class JsonLocation
 
     protected StringBuilder _appendSourceDesc(StringBuilder sb)
     {
-        final Object srcRef = _sourceRef;
+        Object srcRef = _sourceRef;
 
         if (srcRef == null) {
             sb.append("UNKNOWN");
             return sb;
         }
+
+        // Content may be wrapped in `ContentReference`, to retain offset/length
+        // of the window caller handed us: unwrap for type detection, but keep
+        // reference around so snippet can be limited to that window.
+        ContentReference contentRef = null;
+        if (srcRef instanceof ContentReference) {
+            contentRef = (ContentReference) srcRef;
+            srcRef = contentRef.getRawContent();
+            if (srcRef == null) {
+                sb.append("UNKNOWN");
+                return sb;
+            }
+        }
+
         // First, figure out what name to use as source type
         Class<?> srcType = (srcRef instanceof Class<?>) ?
                 ((Class<?>) srcRef) : srcRef.getClass();
@@ -187,31 +211,92 @@ public class JsonLocation
             tn = "char[]";
         }
         sb.append('(').append(tn).append(')');
-        // and then, include (part of) contents for selected types:
-        int len;
-        String charStr = " chars";
 
-        if (srcRef instanceof CharSequence) {
-            CharSequence cs = (CharSequence) srcRef;
-            len = cs.length();
-            len -= _append(sb, cs.subSequence(0, Math.min(len, MAX_CONTENT_SNIPPET)).toString());
-        } else if (srcRef instanceof char[]) {
-            char[] ch = (char[]) srcRef;
-            len = ch.length;
-            len -= _append(sb, new String(ch, 0, Math.min(len, MAX_CONTENT_SNIPPET)));
-        } else if (srcRef instanceof byte[]) {
-            byte[] b = (byte[]) srcRef;
-            int maxLen = Math.min(b.length, MAX_CONTENT_SNIPPET);
-            _append(sb, new String(b, 0, maxLen, Charset.forName("UTF-8")));
-            len = b.length - maxLen;
-            charStr = " bytes";
-        } else {
-            len = 0;
-        }
-        if (len > 0) {
-            sb.append("[truncated ").append(len).append(charStr).append(']');
+        // and then, include (part of) contents for selected types; when we have
+        // a `ContentReference`, only the caller-declared window
+        if (contentRef != null && contentRef.hasTextualContent()) {
+            // First, retrieve declared offset+length for content; handle
+            // negative markers (can't do more for general case)
+            int offset, length;
+            offset = contentRef.contentOffset();
+            if (offset < 0) {
+                offset = 0;
+                length = 0;
+            } else {
+                length = Math.max(0, contentRef.contentLength());
+            }
+
+            String unitStr = " chars";
+            String trimmed;
+
+            if (srcRef instanceof CharSequence) {
+                trimmed = _truncate((CharSequence) srcRef, offset, length);
+            } else if (srcRef instanceof char[]) {
+                trimmed = _truncate((char[]) srcRef, offset, length);
+            } else if (srcRef instanceof byte[]) {
+                trimmed = _truncate((byte[]) srcRef, offset, length);
+                unitStr = " bytes";
+            } else {
+                trimmed = null;
+            }
+            if (trimmed != null) {
+                _append(sb, trimmed);
+                final int truncLen = length - trimmed.length();
+                if (truncLen > 0) {
+                    sb.append("[truncated ").append(truncLen).append(unitStr).append(']');
+                }
+            }
+        } else if (srcRef instanceof CharSequence || srcRef instanceof char[] || srcRef instanceof byte[]) {
+            // Handle non-wrapped sources (legacy path)
+            int len;
+            String charStr = " chars";
+
+            if (srcRef instanceof CharSequence) {
+                CharSequence cs = (CharSequence) srcRef;
+                len = cs.length();
+                len -= _append(sb, cs.subSequence(0, Math.min(len, MAX_CONTENT_SNIPPET)).toString());
+            } else if (srcRef instanceof char[]) {
+                char[] ch = (char[]) srcRef;
+                len = ch.length;
+                len -= _append(sb, new String(ch, 0, Math.min(len, MAX_CONTENT_SNIPPET)));
+            } else if (srcRef instanceof byte[]) {
+                byte[] b = (byte[]) srcRef;
+                int maxLen = Math.min(b.length, MAX_CONTENT_SNIPPET);
+                _append(sb, new String(b, 0, maxLen, Charset.forName("UTF-8")));
+                len = b.length - maxLen;
+                charStr = " bytes";
+            } else {
+                len = 0;
+            }
+            if (len > 0) {
+                sb.append("[truncated ").append(len).append(charStr).append(']');
+            }
         }
         return sb;
+    }
+
+    private String _truncate(CharSequence cs, int start, int length) {
+        final int fullLength = cs.length();
+        start = Math.min(start, fullLength);
+        length = Math.min(Math.min(length, fullLength - start),
+                MAX_CONTENT_SNIPPET);
+        return cs.subSequence(start, start+length).toString();
+    }
+
+    private String _truncate(char[] cs, int start, int length) {
+        final int fullLength = cs.length;
+        start = Math.min(start, fullLength);
+        length = Math.min(Math.min(length, fullLength - start),
+                MAX_CONTENT_SNIPPET);
+        return new String(cs, start, length);
+    }
+
+    private String _truncate(byte[] b, int start, int length) {
+        final int fullLength = b.length;
+        start = Math.min(start, fullLength);
+        length = Math.min(Math.min(length, fullLength - start),
+                MAX_CONTENT_SNIPPET);
+        return new String(b, start, length, Charset.forName("UTF-8"));
     }
 
     private int _append(StringBuilder sb, String content) {
