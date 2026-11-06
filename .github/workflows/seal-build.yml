@@ -1,0 +1,33 @@
+name: seal-build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # The published jar was built with JDK 1.7.0_79 (Build-Jdk manifest header).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '7'
+      - name: Install Maven 3.8.8 (last line that runs on Java 7)
+        run: |
+          for URL in https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.8.8/apache-maven-3.8.8-bin.tar.gz \
+                     https://archive.apache.org/dist/maven/maven-3/3.8.8/binaries/apache-maven-3.8.8-bin.tar.gz; do
+            curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "$RUNNER_TEMP/maven.tar.gz" "$URL" && break
+          done
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-maven-3.8.8/bin" >> "$GITHUB_PATH"
+      - name: Package (tests run on Travis)
+        env:
+          MAVEN_OPTS: -Dhttps.protocols=TLSv1.2
+        run: mvn -B -V -e -ntp -DskipTests clean package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jackson-core-jar
+          path: target/jackson-core-2.9.7.jar
+          if-no-files-found: error
